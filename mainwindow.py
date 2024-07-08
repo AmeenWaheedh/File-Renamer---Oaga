@@ -8,6 +8,7 @@ from PyPDF2 import PdfReader
 import pytesseract
 from PIL import Image
 import io
+import pyodbc
 
 class MainWindow(QMainWindow, Ui_MainWindow):
     def on_item_clicked(self, item, column):
@@ -17,6 +18,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
     def generatePaymentName(self, filePath):
         pytesseract.pytesseract.tesseract_cmd=r'C:\\Users\\' + os.getlogin() + r'\\AppData\\Local\\Programs\\Tesseract-OCR\\tesseract.exe'
+        
         with open(filePath, 'rb') as file:
             reader = PdfReader(file)
             first_page = reader.pages[0]
@@ -26,50 +28,62 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                     size = (xObject[obj])['/Width'], xObject[obj]['/Height']
                     data = xObject[obj].get_data()
                     image = Image.open(io.BytesIO(data))
-                    text = pytesseract.image_to_string(image)
-       #             print (text)
 
-            text = text[text.find('331-6242'):]
-            loc = text.find("PV Number: ")+11
+                    #Crop image to the top 1/4. This is to reduce the time of OCR
+                    width, height = image.size
+                    #image.crop((left, top, right, bottom))... for reference
+                    top_third = image.crop((width * 0.6,0,width, height/4))
+
+                    text = pytesseract.image_to_string(top_third)
+                  #  print (text)
+
+            text = text[text.find('PAYMENT VOUCHER')+16:]
+            loc = text.find("PV No: ")+7
             tempStrip = text[loc:loc + 20]
-      #      print (tempStrip)
+         #   print ("tempStrip is: " + tempStrip)
             Reference = tempStrip[0:tempStrip.find('\n',1)]
-      #      print ("Reference is: " + Reference)
-            if len(Reference) < 6:
-                Reference = text[0:text.find('iary Name:')]
-            #    print (Reference)
-                if len(Reference) < 6:
-                    
-                    Reference = 'XX-XXX'
-                elif not Reference[0:2] == 'BU' or not Reference[0:2] == 'BM':
-                 #   print(Reference)
-                    Reference = 'XX-XXX'
-          #  beneficiary = text[text.find('Vendor Name:',loc)+13: text.find('iary Name:',1)-1]
-            beneficiary = text[text.find('Vendor Name:',loc)+13: text.find('iary Name:',1)-1]
-            #remove common special characters in file name
-            beneficiary = beneficiary.replace("/","")
-            beneficiary = beneficiary.replace(":","")
-            beneficiary = beneficiary.replace("\\","")
-            beneficiary = beneficiary.replace(" Benefi","")
-            beneficiary = beneficiary.replace("Benefi","")
-            #If beneficiary has too much length it means the alogorithm above failed to get correct beneficiary name.
-            #Most likely cause if OCR not generating correct text
-            #In this case, set Beneficiary name to Unknown.
-            if len(beneficiary) > 50:
-                beneficiary = "XXXX OCR did not generate XXXXX"
-       #     print ("Beneficiary is: " + beneficiary)
-            loc = text.find("TOTAL")+5
-            amount = text[loc:loc+10]
-            amount = amount[1:amount.find(" ",1)]
-            #remove a new line character \n if it is in the amount string
-            amount = amount[0:amount.find("\n",1)]
-            if Reference[0:2] == "BU":
-                amount = "USD " + amount
-            else:
-                amount = "MVR " + amount
-          #  print (Reference, beneficiary, amount)
+            dashPosition = Reference.find(" - ")+3
+            pvNumber = Reference[dashPosition:]
 
-        return Reference + " " + beneficiary + " " + amount + ".pdf"
+            try:
+                pvNumber = int(pvNumber)
+        #        print (f"Payment Voucher number is: {pvNumber}")
+            except:
+                return os.path.basename(file.name)
+
+            else:
+                if Reference[0:3] == "BMK":
+                    paymentAccount = 4
+                elif Reference[0:3] == "BUK":
+                    paymentAccount = 3
+                elif Reference[0:2] == "BM":
+                    paymentAccount = 2
+                elif Reference[0:2] == "BU":
+                    paymentAccount = 1
+                conn = pyodbc.connect(r'Driver={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=M:\Innovations\smartPV.accdb')
+                cursor = conn.cursor()
+                testout = cursor.execute(f'SELECT account_name, amount from payments WHERE pv_number = {pvNumber} AND payment_account_id = {paymentAccount}')
+               # print("output is below: ")
+                output = testout.fetchall()[0]
+                testout.close()
+                beneficiary = output[0]
+             #   print (beneficiary)
+                #remove common special characters in file name
+                beneficiary = beneficiary.replace("/","")
+                beneficiary = beneficiary.replace(":","")
+                beneficiary = beneficiary.replace("\\","")
+
+        #     print ("Beneficiary is: " + beneficiary)
+                amount = output[1]
+                #remove a new line character \n if it is in the amount string
+                if Reference[0:2] == "BU":
+                    amount = "USD " + f'{amount*1:.2f}'
+                else:
+                    amount = "MVR " + f'{amount*1:.2f}'
+            #  print (Reference, beneficiary, amount)
+            
+
+        return Reference + " " + beneficiary + " " + str(amount) + ".pdf"
 
     def __init__(self, app):
         super().__init__()
@@ -125,10 +139,10 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         #clear contents of file name array and payment name array i.e self.f and self.n
         self.clearComponents()
 
-        fArray = QFileDialog.getOpenFileNames(self, "Select scanned files",r"\\","PDF Files (*.pdf)")
+        fArray = QFileDialog.getOpenFileNames(self, "Select scanned files",self.sourceDir,"PDF Files (*.pdf)")
         #get source directory from the first element in fArray
         self.sourceDir = os.path.dirname(os.path.abspath(fArray[0][0]))
-        print(self.sourceDir)
+     #   print(self.sourceDir)
 
         #get file names of selected files
         for fileName in fArray[0]:
